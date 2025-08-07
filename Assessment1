@@ -78,8 +78,8 @@ def add_ingredient():
         print("Ingredient already exists in the inventory.")
     else:
         quantity = input("Enter quantity with unit (e.g., '20 kilos'): ").strip()
-        if quantity == "":
-            print("Quantity cannot be empty.")
+        if quantity == "" or int(quantity) <= 0:
+            print("Quantity cannot be empty. Please enter a valid number: ")
         else:
             inventory[ingredient] = quantity
             print(f"{ingredient} added successfully with quantity: {quantity}")
