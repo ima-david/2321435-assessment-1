@@ -1,50 +1,80 @@
-# Sweet Surrender Bakery - Ingredient Inventory & Recipe Cost Estimator
+"""
+Sweet Surrender Bakery - Ingredient Inventory & Recipe Cost Estimator
+Author: <Ima David> (<2321435.>)
+Notes:
+- Validates inputs robustly; ingredient keys are normalised (lowercase).
+- Quantities are numeric; units stored separately (g/ml/units) for display.
+- Core features: add, view, update (delta add/subtract), search.
+- Extra features: recipe planning & cost estimation.
 
-# Initial Inventory
+How data is stored
+------------------
+inventory: dict[str, float]       -> numeric quantity on hand (e.g., grams or units)
+units:     dict[str, str]         -> display unit for each ingredient (e.g., "g", "ml", "units")
+price_per_unit: dict[str, float]  -> price per unit (per gram/ml or per unit)
+recipes:   dict[str, dict[str, int|float]] -> required amounts per batch (same unit basis as 'units')
+
+Design choices
+--------------
+- Numeric storage avoids brittle parsing like "20 kilos". We accept a number + (optional) unit.
+- Consistent keys across inventory, prices, and recipes prevents mismatches.
+- Defensive validation with clear user feedback and non-crashing flows.
+"""
+
+# ---------------------------- Initial Data ----------------------------
+
 inventory = {
-    "sugar": 300,
-    "butter": 30,
-    "vanilla": 25,
-    "baking soda": 10,
-    "chocolate chips": 100,
-    "cocoa powder": 800
+    "sugar": 300.0,
+    "butter": 30.0,
+    "vanilla": 25.0,
+    "baking soda": 10.0,
+    "chocolate chips": 100.0,
+    "cocoa powder": 800.0
 }
 
-# Price per unit (e.g., per gram or per unit)
+units = {
+    "sugar": "g",
+    "butter": "g",
+    "vanilla": "ml",
+    "baking soda": "g",
+    "chocolate chips": "g",
+    "cocoa powder": "g",
+}
+
 price_per_unit = {
-    "flour": 0.0013,
+    "flour": 0.0013,            # £ per gram
     "sugar": 0.0011,
-    "eggs": 0.20,
+    "eggs": 0.20,               # £ per egg
     "butter": 0.0088,
     "milk": 0.0011,
-    "vanilla": 0.17,
-    "baking": 0.0026,
+    "vanilla": 0.17,            # £ per ml
+    "baking soda": 0.0026,
     "baking powder": 0.0088,
-    "bananas": 0.16,
+    "bananas": 0.16,            # £ per banana
     "chocolate chips": 0.005,
     "cocoa powder": 0.0177
 }
 
-# Recipe database
 recipes = {
     "cookies": {
-        "flour": 280,
-        "sugar": 150,
-        "butter": 170,
-        "eggs": 1,
-        "vanilla": 5,
-        "chocolate chips": 200,
-        "baking powder": 2,
-        "baking soda": 3
+        "flour": 280,            # g
+        "sugar": 150,            # g
+        "butter": 170,           # g
+        "eggs": 1,               # units
+        "vanilla": 5,            # ml
+        "chocolate chips": 200,  # g
+        "baking powder": 2,      # g
+        "baking soda": 3         # g
     },
     "cupcakes": {
         "flour": 250,
         "sugar": 200,
         "butter": 100,
         "eggs": 2,
-        "milk": 150,
+        "milk": 150,             # ml
         "vanilla": 5,
-        "baking": 10
+        "baking powder": 4,
+        "baking soda": 2
     },
     "banana bread": {
         "flour": 270,
@@ -52,15 +82,53 @@ recipes = {
         "butter": 120,
         "eggs": 2,
         "vanilla": 5,
-        "chocolate chips": 200,
+        "bananas": 2,
         "baking powder": 2,
         "baking soda": 3
     }
 }
 
-# ----------- Inventory Management Functions -----------
+# ---------------------------- Helpers ----------------------------
+
+def fmt_qty(name: str, qty: float) -> str:
+    """Format a quantity with its unit for display."""
+    u = units.get(name, "g")
+    q = int(round(qty)) if abs(qty - round(qty)) < 1e-9 else qty
+    return f"{q} {u}"
+
+def get_float(prompt: str, min_value: float | None = None, strict_min: bool = False) -> float:
+    """
+    Robustly fetch a float from user input.
+    - Re-prompts until a valid number is entered.
+    - Enforces an optional minimum.
+      * If strict_min=False (default): accepts values >= min_value
+      * If strict_min=True: accepts values  > min_value
+    """
+    while True:
+        raw = input(prompt).strip()
+        try:
+            val = float(raw)
+            if min_value is not None:
+                if strict_min:
+                    if val <= min_value:
+                        print(f"Please enter a number > {min_value}.")
+                        continue
+                else:
+                    if val < min_value:
+                        print(f"Please enter a number >= {min_value}.")
+                        continue
+            return val
+        except ValueError:
+            print("Please enter a valid number (e.g., 10 or 12.5).")
+
+def normalise_name(name: str) -> str:
+    """Normalise ingredient names for consistent key matching (lowercase & strip)."""
+    return name.strip().lower()
+
+# ---------------------------- Core UI ----------------------------
 
 def display_menu():
+    """Print the main menu options."""
     print("\n===== INGREDIENT INVENTORY MENU =====")
     print("1. Add New Ingredient")
     print("2. View All Ingredients")
@@ -69,107 +137,153 @@ def display_menu():
     print("5. Exit Program")
     print("6. Recipe Planning & Cost Estimation")
 
+# ---------------------------- Core Features ----------------------------
+
 def add_ingredient():
-    ingredient = input("Enter the ingredient name: ").strip()
-    if ingredient == "":
+    """
+    Add a new ingredient with quantity and optional unit.
+    - Names are case-insensitive internally.
+    - Quantity must be strictly greater than 0 (no zero).
+    """
+    name = normalise_name(input("Enter the ingredient name: "))
+    if not name:
         print("Ingredient name cannot be empty.")
         return
-    if ingredient in inventory:
+
+    if name in inventory:
         print("Ingredient already exists in the inventory.")
-    else:
-        quantity = input("Enter quantity with unit (e.g., '20 kilos'): ").strip()
-        if quantity == "" or int(quantity) <= 0:
-            print("Quantity cannot be empty. Please enter a valid number: ")
-        else:
-            inventory[ingredient] = quantity
-            print(f"{ingredient} added successfully with quantity: {quantity}")
+        return
+
+    # Require quantity > 0 (zero rejected)
+    qty = get_float("Enter quantity (number only, e.g., 500): ", min_value=0.0, strict_min=True)
+    unit = input("Enter unit (e.g., g, ml, units) [default g]: ").strip().lower() or "g"
+
+    inventory[name] = qty
+    units[name] = unit
+    print(f"{name} added successfully with quantity: {fmt_qty(name, qty)}")
 
 def view_ingredients():
+    """Display all ingredients and their quantities."""
     if not inventory:
         print("Inventory is currently empty.")
-    else:
-        print("\n--- Current Inventory ---")
-        for item, qty in inventory.items():
-            print(f"{item}: {qty}")
+        return
+    print("\n--- Current Inventory ---")
+    for item in sorted(inventory.keys()):
+        print(f"{item}: {fmt_qty(item, inventory[item])}")
 
 def update_quantity():
-    ingredient = input("Enter the ingredient name to update: ").strip()
-    if ingredient in inventory:
-        new_quantity = input("Enter the new quantity (e.g., '5 kilos'): ").strip()
-        if new_quantity == "":
-            print("Quantity cannot be empty.")
-        else:
-            inventory[ingredient] = new_quantity
-            print(f"Updated {ingredient} to: {new_quantity}")
-    else:
+    """
+    Adjust an existing ingredient's quantity by a delta (adds/subtracts; does NOT overwrite).
+    - Enter a positive number to increase, or a negative number to decrease.
+    - Final stock must remain strictly > 0 (no zero or negative).
+    """
+    name = normalise_name(input("Enter the ingredient name to update: "))
+    if name not in inventory:
         print("Ingredient not found in the inventory.")
+        return
+
+    current = inventory[name]
+    print(f"Current {name}: {fmt_qty(name, current)}")
+
+    delta = get_float("Enter quantity change (e.g., 50 to add, -20 to subtract): ")
+    new_qty = current + delta
+
+    # Enforce strictly positive final stock
+    if new_qty <= 0:
+        print(f"Update rejected: resulting quantity would be {new_qty}, which is not allowed.")
+        print(f"'{name}' remains at {fmt_qty(name, current)} (must stay > 0).")
+        return
+
+    # Optional: allow unit change
+    maybe_unit = input(
+        f"Enter unit for {name} [leave blank to keep '{units.get(name, 'g')}']: "
+    ).strip().lower()
+    if maybe_unit:
+        units[name] = maybe_unit
+
+    inventory[name] = new_qty
+    sign = "+" if delta >= 0 else ""
+    print(f"Updated {name}: {fmt_qty(name, new_qty)} (change applied: {sign}{delta})")
 
 def search_ingredient():
-    ingredient = input("Enter the ingredient name to search: ").strip()
-    if ingredient in inventory:
-        print(f"{ingredient}: {inventory[ingredient]}")
+    """Search and display a single ingredient."""
+    name = normalise_name(input("Enter the ingredient name to search: "))
+    if name in inventory:
+        print(f"{name}: {fmt_qty(name, inventory[name])}")
     else:
         print("Ingredient not found in the inventory.")
 
-# ----------- Recipe Planning Functions -----------
+# ---------------------------- Recipe Planning (Optional) ----------------------------
 
-def scale_recipe(recipe, num_batches):
-    scaled = {}
-    for ingredient, amount in recipe.items():
-        scaled[ingredient] = amount * num_batches
-    return scaled
+def scale_recipe(recipe: dict[str, float], num_batches: int) -> dict[str, float]:
+    """Multiply recipe amounts by the number of batches."""
+    return {k: v * num_batches for k, v in recipe.items()}
 
-def place_order(inventory, recipe):
+def place_order(inv: dict[str, float], needed: dict[str, float]) -> dict[str, float]:
+    """
+    Compare needed amounts vs inventory and return a dict of shortages.
+    - Missing ingredients are treated as zero in stock.
+    """
     order = {}
-    for ingredient, needed_amount in recipe.items():
-        current = inventory.get(ingredient, 0)
-        try:
-            current = float(current)
-        except:
-            current = 0
-        if current < needed_amount:
-            order[ingredient] = needed_amount - current
+    for ing, required in needed.items():
+        current = float(inv.get(ing, 0.0))
+        if current < required:
+            order[ing] = round(required - current, 2)
     return order
 
-def get_cost(order, prices):
-    cost = 0
-    for ingredient, amount in order.items():
-        price = prices.get(ingredient, 0)
-        cost += amount * price
+def get_cost(order: dict[str, float], prices: dict[str, float]) -> float:
+    """Compute total cost of shortages using price_per_unit; missing prices assume 0."""
+    cost = 0.0
+    for ing, amt in order.items():
+        p = prices.get(ing, 0.0)
+        cost += amt * p
     return round(cost, 2)
 
 def recipe_planning():
+    """Interactive flow to plan recipes, compute shortages, and estimate cost."""
+    if not recipes:
+        print("No recipes available.")
+        return
+
     print("\nAvailable Recipes:")
-    for i, recipe_name in enumerate(recipes.keys(), 1):
+    recipe_keys = list(recipes.keys())
+    for i, recipe_name in enumerate(recipe_keys, 1):
         print(f"{i}. {recipe_name.title()}")
+
     try:
         choice = int(input("Select a recipe by number: "))
-        recipe_keys = list(recipes.keys())
         if choice < 1 or choice > len(recipe_keys):
             print("Invalid selection.")
             return
-        selected_recipe = recipe_keys[choice - 1]
-        batches = int(input("Enter number of batches: "))
-        scaled = scale_recipe(recipes[selected_recipe], batches)
-        print("\n--- Scaled Recipe ---")
-        for item, qty in scaled.items():
-            print(f"{item}: {qty}")
-
-        order = place_order(inventory, scaled)
-        if order:
-            print("\n--- Ingredients to Order ---")
-            for item, qty in order.items():
-                print(f"{item}: {qty}")
-            cost = get_cost(order, price_per_unit)
-            print(f"Total cost to fulfill order: £{cost}")
-        else:
-            print("\nAll ingredients are in sufficient quantity.")
     except ValueError:
-        print("Invalid input. Please enter numbers only.")
+        print("Invalid input. Please enter a number.")
+        return
 
-# ----------- Main Loop -----------
+    selected = recipe_keys[choice - 1]
+    batches = int(get_float("Enter number of batches (integer): ", min_value=1.0))
+    scaled = scale_recipe(recipes[selected], batches)
+
+    print("\n--- Scaled Recipe ---")
+    for item, qty in scaled.items():
+        u = units.get(item, "g" if item not in ("eggs", "bananas") else "units")
+        q = int(round(qty)) if abs(qty - round(qty)) < 1e-9 else qty
+        print(f"{item}: {q} {u}")
+
+    order = place_order(inventory, scaled)
+    if order:
+        print("\n--- Ingredients to Order ---")
+        for item, qty in order.items():
+            u = units.get(item, "g" if item not in ("eggs", "bananas") else "units")
+            print(f"{item}: {qty} {u}")
+        cost = get_cost(order, price_per_unit)
+        print(f"Total cost to fulfill order: £{cost}")
+    else:
+        print("\nAll ingredients are in sufficient quantity.")
+
+# ---------------------------- Main Loop ----------------------------
 
 def main():
+    """Main menu loop. Continues until the user selects Exit."""
     while True:
         display_menu()
         choice = input("Enter your choice (1–6): ").strip()
@@ -191,3 +305,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
